@@ -1,0 +1,198 @@
+---
+title: "R Notebook"
+output: html_notebook
+---
+
+```{r setup}
+knitr::opts_knit$set(root.dir = '/home/harpo/hostdir/ia-dojo-repo/experiments/dga-gen/')
+```
+
+```{r message=FALSE, warning=FALSE}
+library(keras)
+library(tensorflow)
+```
+
+
+```{r}
+source("code/R/functions/dgagen-helpers.R")
+```
+
+```{r}
+gc()
+text <- readr::read_csv("rawdata/argencon.csv.gz")
+text<-text %>% filter(grepl("normal",label))
+text<-text %>% sample_frac(0.1)
+domains <-  text %>% pull(domain)
+domains
+```
+
+```{r}
+sentences_tokenized<-tokenize(domains %>% as.matrix, "n",maxlen)
+shape <- c(nrow(sentences_tokenized$x), maxlen, length(valid_characters_vector))
+seq_x<-to_onehot(sentences_tokenized$x,shape)
+seq_x[1,,]
+
+
+```
+
+## Check one_hot
+```{r}
+dimen<-seq_x %>% dim()
+enc<-""
+for (i in 0:dimen[2]  ){
+#      print(i)
+      enc<-str_c(enc,valid_characters_vector[which.max(seq_x[1,i,])])
+}
+enc
+```
+ 
+```{r}
+dim (seq_x)
+```
+ 
+## Sequence Autoencoder 
+```{r}
+# This is the size of our encoded representations
+encoding_dim <- c(10, 8)
+
+input_size <-  c(maxlen, length(valid_characters_vector))
+## ENCODER
+enc_input <- layer_input(shape = input_size)
+enc_output <- enc_input %>% 
+  layer_conv_1d(
+  filters = 16,
+  kernel_size = 3,
+  activation = 'relu',
+  padding = 'valid',
+  strides = 1
+) %>%
+ layer_max_pooling_1d(pool_size = 2, padding = 'same') %>%
+ layer_conv_1d(
+   filters = 8,
+   kernel_size = 3,
+   activation = 'relu',
+   padding = 'same',
+   strides = 1
+ ) %>%
+ layer_max_pooling_1d(pool_size = 2, padding = 'same')
+
+## DECODER
+dec_input <- layer_input(shape = encoding_dim)
+
+dec_output <-   dec_input %>%
+  layer_conv_1d(
+    filters = 8,
+    kernel_size = 3,
+    activation = 'relu',
+    padding = 'same',
+    strides = 1
+  ) %>%
+  layer_upsampling_1d(size = 2) %>%
+ 
+ layer_conv_1d(
+    filters = 16,
+    kernel_size = 3,
+    activation = 'relu',
+    padding = 'same',
+    strides = 1
+  ) %>%
+  layer_upsampling_1d(size = 2)   %>%
+  layer_dense(44, activation = 'sigmoid')
+
+
+encoder <- keras_model(enc_input, enc_output,name ="encoder")
+decoder <- keras_model(dec_input, dec_output,name ="decoder")
+
+encoder
+decoder
+```
+## LSTM sequence Autoencoder
+
+```{r}
+
+input_size <-  c(maxlen, length(valid_characters_vector))
+latent_dim <- 64 
+## ENCODER
+enc_input <- layer_input(shape = input_size) 
+enc_output <- enc_input %>% 
+  layer_masking(mask_value = 0) %>%
+  layer_lstm(latent_dim)
+
+## DECODER
+dec_input <- layer_input(shape = latent_dim)
+dec_output <-   dec_input %>% 
+                layer_repeat_vector(maxlen) %>%
+                layer_lstm(valid_characters_vector %>% length(), return_sequences = TRUE) %>%
+                layer_dense(valid_characters_vector %>% length(),activation = 'softmax')
+               #$ outputs = TimeDistributed(Dense(vocab_size, activation='softmax'))(decoder1)
+  
+encoder <- keras_model(enc_input, enc_output,name ="encoder")
+decoder <- keras_model(dec_input, dec_output,name ="decoder")
+
+encoder
+decoder
+```
+
+
+```{r}
+
+autoencoder_input <- layer_input(shape = input_size,name="ae_input")
+autoencoder_output <- autoencoder_input %>% 
+  encoder() %>% 
+  decoder()
+autoencoder <- keras_model(autoencoder_input, autoencoder_output,name="autoencoder")
+optimizer <- optimizer_adam(learning_rate = 0.005)
+autoencoder %>% compile(optimizer= optimizer, loss='mse')
+autoencoder
+```
+ 
+```{r}
+autoencoder %>% fit(seq_x, seq_x,
+                epochs=15,
+                batch_size=512)
+```
+```{r}
+save_model_tf(decoder,"../../../models/dgagen-decoder.keras")
+```
+ 
+```{r}
+decoder_b <- load_model_tf("../../../models/dgagen-decoder.keras")
+```
+
+
+```{r}
+#autoencoder$get_layer("decoder") %>% get_weights()
+
+d<-domains[5]
+d
+
+vectorized_test <- tokenize(d, "n", maxlen)
+      shape = c(nrow(vectorized_test$x),
+                maxlen,
+                length(valid_characters_vector))
+vectorized_test <- to_onehot(vectorized_test$x, shape)
+preds_encoder <- encoder(vectorized_test)
+
+preds_encoder<- preds_encoder %>%  as.array() 
+
+#preds_encoder[1]    <- preds_encoder[1]+rnorm(1,mean=0, sd= 1)  
+#preds_encoder[5]    <- preds_encoder[5]+rnorm(1,mean=0, sd= 1)  
+#preds_encoder[10]    <- preds_encoder[10]+rnorm(1,mean=0, sd= 1)  
+#preds_encoder[15]    <- preds_encoder[15]+rnorm(1,mean=0, sd= 1)  
+#preds_encoder[25]    <- preds_encoder[25]+rnorm(1,mean=0, sd= 1)  
+#vectorized_test[1,,]
+
+preds<-decoder(preds_encoder) %>% as.array() 
+
+#preds[1,2,] %>% which.max()
+#valid_characters_vector[16]
+dimen<- preds %>% dim()
+enc<-""
+for (i in 0:dimen[2]  ){
+#      print(i)
+      enc<-str_c(enc,valid_characters_vector[which.max(preds[1,i,])])
+}
+enc
+```
+ 
+ 

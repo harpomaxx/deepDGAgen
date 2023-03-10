@@ -1,0 +1,373 @@
+---
+title: "simple CNN DGA generator"
+output: html_notebook
+---
+
+
+```{r message=FALSE, warning=FALSE}
+library(tensorflow)
+library(tokenizers)
+library(keras)
+library(reticulate) 
+library(stringr)
+library(dplyr)
+library(janeaustenr)
+library(tokenizers)
+library(purrr)
+```
+
+
+# R
+
+##  CORPUS 2
+```{r}
+text <- austen_books() %>%
+    filter(book == "Pride & Prejudice") %>%
+    pull(text) %>%
+    str_c(collapse = " ") 
+print(paste("Corpus length:", nchar(text)))
+```
+
+## Create vocabulary
+
+```{r}
+text <- text %>%
+    tokenize_characters(lowercase = FALSE, strip_non_alphanum = FALSE, simplify = TRUE)
+
+print(sprintf("Corpus length: %d", length(text)))
+```
+
+```{r}
+maxlen <-40
+steps <- 3
+```
+
+```{r}
+dataset <- map(
+    seq(1, length(text) - maxlen - 1, by = steps),
+    ~list(sentence = text[.x:(.x + maxlen - 1)],
+          next_char = text[.x + maxlen])
+)
+dataset <- transpose(dataset)
+
+seq_x <- dataset$sentence %>% map(~str_c(.x,collapse= "")) %>% unlist()
+seq_y <- dataset$next_char %>% unlist()
+cbind(seq_x,seq_y)
+seq_x[1] %>% nchar()
+```
+
+```{r}
+valid_characters_vector<-text %>% sort() %>% unique()
+valid_characters_vector<-c(valid_characters_vector)
+tokens <- 1:length(valid_characters_vector)
+names(tokens) <- valid_characters_vector
+valid_characters_vector %>% length
+tokens %>% length
+
+```
+
+
+## Function for tokenizer and one_hot
+```{r}
+library(purrr)
+pad_sequences_fast <-
+  function(x,
+           maxlen,
+           padding = "pre",
+           truncating = "pre",
+           value = 0) {
+    x %>%
+      map(function(x) {
+        if (length(x) > maxlen) {
+          if (truncating == "pre") {
+            x[(length(x) - (maxlen) + 1):length(x)]
+          } else if (truncating == "post") {
+            x[1:maxlen]
+          } else {
+            stop("Invalid value for 'truncating'")
+          }
+        } else {
+          if (padding == "pre") {
+            c(rep(value, maxlen - length(x)), x)
+          } else if (padding == "post") {
+            c(x, rep(value, maxlen - length(x)))
+          } else {
+            stop("Invalid value for 'padding'")
+          }
+        }
+      }) %>%
+      do.call(c, .) %>%
+      unlist() %>%
+      matrix(ncol = maxlen, byrow = TRUE)
+  }
+
+# convert dataset to matrix of tokens
+tokenize <- function(data, labels, maxlen) {
+  sequencel <- sapply(data, function(x)
+    strsplit(x, split = ""))
+  # print(sequencel)
+  x_data <- lapply(sequencel, function(x)
+    sapply(x, function(x) {
+      tokens[[x]]
+    }))
+  
+  y_data <- lapply(labels, function(x)
+    sapply(x, function(x) {
+      tokens[[x]]
+    }))
+  
+  padded_token <-
+    pad_sequences_fast(
+      unname(x_data),
+      maxlen = maxlen,
+      padding = 'post',
+      truncating = 'post'
+    )
+  return (list(x = padded_token, y = y_data %>% unlist() %>% unname()))
+  
+}
+# convert vector with char tokens to one-hot encodings
+to_onehot <- function(data, shape) {
+  train <- array(0, dim = c(shape[1], shape[2], shape[3]))
+  for (i in 1:shape[1]) {
+    for (j in 1:shape[2])
+      train[i, j, data[i, j]] <- 1
+  }
+  return (train)
+}
+
+to_onehot_y <- function(data, shape) {
+  train <- array(0, dim = c(shape[1], shape[2]))
+  for (i in 1:shape[1]) {
+    train[i, data[i]] <- 1
+  }
+  return (train)
+}
+
+
+```
+
+```{r}
+# Create a dataset using tokenizer
+build_dataset_tokenizer <- function(data, labels, maxlen) {
+  labels <- labels %>% as.matrix()
+  dataset <- tokenize(data, labels, maxlen)
+  shape = c(length(dataset$y), length(valid_characters_vector))
+  dataset$y <- to_onehot_y(dataset$y, shape)
+
+return(dataset)
+}
+sentences_tokenizer <- build_dataset_tokenizer(seq_x, seq_y, maxlen)
+
+initial_sentence <-seq_x[1]
+vectorized_test<-sentences_tokenizer$x[1,]
+enc<-""
+for (i in 0:length(vectorized_test)  ){
+      enc<-str_c(enc,valid_characters_vector[vectorized_test[i]])
+}
+enc==initial_sentence
+```
+
+```{r}
+# Create a dataset using one_hot
+build_dataset_one_hot <- function(data, labels, maxlen) {
+  labels <- labels %>% as.matrix()
+  dataset <- tokenize(data, labels, maxlen)
+  shape = c(nrow(dataset$x), maxlen, length(valid_characters_vector))
+  dataset$x <- to_onehot(dataset$x, shape)
+  shape = c(length(dataset$y), length(valid_characters_vector))
+  dataset$y <- to_onehot_y(dataset$y, shape)
+  return(dataset)
+}
+
+sentences_one_hot <- build_dataset_one_hot(seq_x, seq_y, maxlen)
+```
+
+## Check tokenizer
+```{r}
+initial_sentence <-seq_x[sample(1:length(seq_x),1)]
+vectorized_test<-tokenize(initial_sentence,"n",maxlen)
+enc<-""
+for (i in 0:length(vectorized_test$x)  ){
+      enc<-str_c(enc,valid_characters_vector[vectorized_test$x[i]])
+}
+enc==initial_sentence
+```
+
+## Check one_hot
+```{r}
+shape=c(nrow(vectorized_test$x),maxlen,length(valid_characters_vector))
+vectorized_test<-to_onehot(vectorized_test$x,shape)
+dimen<-vectorized_test %>% dim()
+enc<-""
+for (i in 0:dimen[2]  ){
+#      print(i)
+      enc<-str_c(enc,valid_characters_vector[which.max(vectorized_test[1,i,])])
+}
+enc==initial_sentence
+```
+
+##  Helper function for generating next char
+```{r}
+choose_next_char <- function(preds, chars, temperature){
+        preds <- log(preds) / temperature
+        exp_preds <- exp(preds)
+        preds <- exp_preds / sum(exp(preds))
+
+        next_index <- rmultinom(1, 1, preds) %>%
+            as.integer() %>%
+            which.max()
+        chars[next_index]
+    }
+```
+
+
+## Model 1 (embedding)
+```{r}
+seq_vectorized_x<-sentences_tokenizer$x
+seq_vectorized_y<-sentences_tokenizer$y
+
+inputs <- keras::layer_input(shape = maxlen )
+lstm <- inputs %>% 
+  keras::layer_embedding(output_dim=length(valid_characters_vector),
+                                          input_dim = maxlen,
+                                          input_length = maxlen,
+                                          mask_zero = TRUE
+                                          ) %>%  
+  #keras::layer_dropout(0.5) %>%
+  keras::layer_lstm(units=128, return_sequences = FALSE) %>% 
+  #keras::layer_gru(units=, return_sequences = TRUE) %>% 
+  #keras::layer_dropout(0.5) %>%
+  #keras::layer_flatten() %>%
+  keras::layer_dense(units=length(valid_characters_vector),activation = 'softmax') 
+model <-keras_model(inputs = inputs, outputs = lstm)
+
+optimizer <- keras::optimizer_rmsprop(learning_rate = 0.005)
+keras::compile(model,
+               loss="categorical_crossentropy",
+               optimizer=optimizer)
+
+summary(model)
+```
+
+## Model 1.1 (embedding)
+```{r}
+
+seq_vectorized_x<-sentences_tokenizer$x
+seq_vectorized_y<-sentences_tokenizer$y
+
+inputs <- keras::layer_input(shape = maxlen )
+cnn <- inputs %>% 
+  keras::layer_embedding(output_dim=100,
+                                          input_dim = maxlen,
+                                          input_length = maxlen,
+                                          mask_zero = TRUE
+                                          ) %>%  
+  layer_conv_1d(filters = 256, kernel_size = 8, activation = 'relu', padding='valid',strides=1) %>%
+  layer_flatten() %>%
+  #layer_dense(256,activation='relu') %>%
+  keras::layer_dense(units=length(valid_characters_vector),activation = 'softmax') 
+modelcnn <-keras_model(inputs = inputs, outputs = cnn)
+
+optimizer <- keras::optimizer_rmsprop(learning_rate = 0.005)
+keras::compile(modelcnn,
+               loss="categorical_crossentropy",
+               optimizer=optimizer)
+
+summary(modelcnn)
+```
+
+
+
+### Train embedding
+```{r}
+
+seq_vectorized_x %>% dim
+seq_vectorized_y %>% dim
+modelcnn %>% fit(seq_vectorized_x, seq_vectorized_y, batch_size=128, epochs=5, verbose=1)
+```
+
+
+### Generate
+
+```{r}
+for (j in seq(0:3)){
+initial_sentence <-seq_x[sample(1:length(seq_x),1)]
+#model %>% fit(seq_vectorized_x, seq_vectorized_y, batch_size=128, epochs=1, verbose=1)
+generated<-""
+for (i in seq(0:150)) {
+  vectorized_test<-tokenize(initial_sentence,"n",maxlen)
+  predictions <- predict(modelcnn, vectorized_test$x,verbose = 0)
+  
+  #next_index <- sample(1:length(predictions),1,prob=predictions,replace=TRUE)
+  #next_char <- valid_characters_vector[next_index]
+  next_char <- choose_next_char(preds = predictions, chars = valid_characters_vector, temperature = 0.3)
+  initial_sentence <- paste0(initial_sentence, next_char)
+  initial_sentence <- substr(initial_sentence, 2, nchar(initial_sentence))
+  generated<-paste0(generated, next_char)
+}
+print(paste0("epoch: ",j," generated: ",generated))
+}
+```
+
+
+## Model 2 (sequential, one_hot)
+```{r}
+create_model <- function(chars, max_length){
+    keras_model_sequential() %>%
+        #layer_lstm(128, input_shape = c(max_length, length(chars))) %>%
+         layer_conv_1d(filters = 32, kernel_size = 3,
+                       activation = 'relu', 
+                       padding='valid',
+                       strides=1,
+                       input_shape = c(max_length, length(chars))
+                       ) %>%
+          layer_flatten() %>%
+        layer_dense(length(chars)) %>%
+        layer_activation("softmax") %>%
+        compile(
+            loss = "categorical_crossentropy",
+            #optimizer = optimizer_rmsprop(learning_rate = 0.001)
+            optimizer = optimizer_adam()
+        )
+}
+seq_vectorized_x<-sentences_one_hot$x
+seq_vectorized_y<-sentences_one_hot$y
+model_onehot <- create_model(valid_characters_vector,max_length = maxlen)
+summary(model_onehot)
+```
+
+### Train
+```{r}
+gc()
+seq_vectorized_x %>% dim
+seq_vectorized_y %>% dim
+model_onehot %>% fit(seq_vectorized_x, seq_vectorized_y, batch_size=128, epochs=10, verbose=1)
+```
+
+
+
+
+
+```{r}
+for (j in seq(0:3)){
+initial_sentence <-seq_x[sample(1:length(seq_x),1)]
+#model %>% fit(seq_vectorized_x, seq_vectorized_y, batch_size=128, epochs=1, verbose=1)
+generated<-""
+for (i in seq(0:150)) {
+  vectorized_test<-tokenize(initial_sentence,"n",maxlen)
+  shape=c(nrow(vectorized_test$x),maxlen,length(valid_characters_vector))
+  vectorized_test<-to_onehot(vectorized_test$x,shape)
+  predictions <- predict(model_onehot, vectorized_test,verbose = 0)
+  next_char <- choose_next_char(preds = predictions, chars = valid_characters_vector, temperature = 0.2)
+  initial_sentence <- paste0(initial_sentence, next_char)
+  initial_sentence <- substr(initial_sentence, 2, nchar(initial_sentence))
+  generated<-paste0(generated, next_char)
+}
+print(paste0("epoch: ",j," generated: ",generated))
+}
+```
+
+
+
+

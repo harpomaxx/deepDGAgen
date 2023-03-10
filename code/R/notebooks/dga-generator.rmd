@@ -1,0 +1,353 @@
+---
+title: "R Notebook"
+output: html_notebook
+---
+
+```{r message=FALSE, warning=FALSE}
+library(tensorflow)
+library(tokenizers)
+library(keras)
+library(reticulate) 
+library(stringr)
+library(dplyr)
+
+library(tokenizers)
+library(purrr)
+```
+
+
+## Corpus
+
+
+```{r}
+text <- readr::read_csv("../../../rawdata/argencon.csv.gz")
+
+text<-text %>% filter(grepl("normal",label))
+
+text<-text %>% sample_frac(0.03)
+domains <-  text %>% pull(domain) %>%
+    str_c(collapse = " ") 
+print(paste("Corpus length:", nchar(domains)))
+
+
+
+
+```
+
+```{r}
+```
+
+
+```{r}
+domains <- domains %>%
+    tokenize_characters(lowercase = TRUE, strip_non_alphanum = TRUE, simplify = TRUE)
+
+print(sprintf("Corpus length: %d", length(text)))
+```
+
+
+## Create vocabulary
+
+```{r}
+vocabulary <-
+  stringr::str_split("$abcdefghijklmnopqrstuvwxyz0123456789-_.+*,\"", pattern = '')[[1]]
+```
+
+```{r}
+maxlen <-40
+steps <- 3
+```
+
+```{r}
+dataset <- map(
+    seq(1, length(domains) - maxlen - 1, by = steps),
+    ~list(sentence = domains[.x:(.x + maxlen - 1)],
+          next_char = domains[.x + maxlen])
+)
+dataset <- transpose(dataset)
+
+seq_x <- dataset$sentence %>% map(~str_c(.x,collapse= "")) %>% unlist()
+seq_y <- dataset$next_char %>% unlist()
+cbind(seq_x,seq_y)
+seq_x[1] %>% nchar()
+
+```
+
+
+```{r}
+valid_characters_vector<-vocabulary
+valid_characters_vector<-c(valid_characters_vector)
+tokens <- 1:length(valid_characters_vector)
+names(tokens) <- valid_characters_vector
+valid_characters_vector %>% length
+tokens %>% length
+
+```
+## Function for tokenizer and one_hot
+```{r}
+library(purrr)
+pad_sequences_fast <-
+  function(x,
+           maxlen,
+           padding = "pre",
+           truncating = "pre",
+           value = 0) {
+    x %>%
+      map(function(x) {
+        if (length(x) > maxlen) {
+          if (truncating == "pre") {
+            x[(length(x) - (maxlen) + 1):length(x)]
+          } else if (truncating == "post") {
+            x[1:maxlen]
+          } else {
+            stop("Invalid value for 'truncating'")
+          }
+        } else {
+          if (padding == "pre") {
+            c(rep(value, maxlen - length(x)), x)
+          } else if (padding == "post") {
+            c(x, rep(value, maxlen - length(x)))
+          } else {
+            stop("Invalid value for 'padding'")
+          }
+        }
+      }) %>%
+      do.call(c, .) %>%
+      unlist() %>%
+      matrix(ncol = maxlen, byrow = TRUE)
+  }
+
+# convert dataset to matrix of tokens
+tokenize <- function(data, labels, maxlen) {
+  sequencel <- sapply(data, function(x)
+    strsplit(x, split = ""))
+  # print(sequencel)
+  x_data <- lapply(sequencel, function(x)
+    sapply(x, function(x) {
+      tokens[[x]]
+    }))
+  
+  y_data <- lapply(labels, function(x)
+    sapply(x, function(x) {
+      tokens[[x]]
+    }))
+  
+  padded_token <-
+    pad_sequences_fast(
+      unname(x_data),
+      maxlen = maxlen,
+      padding = 'post',
+      truncating = 'post'
+    )
+  return (list(x = padded_token, y = y_data %>% unlist() %>% unname()))
+  
+}
+# convert vector with char tokens to one-hot encodings
+to_onehot <- function(data, shape) {
+  train <- array(0, dim = c(shape[1], shape[2], shape[3]))
+  for (i in 1:shape[1]) {
+    for (j in 1:shape[2])
+      train[i, j, data[i, j]] <- 1
+  }
+  return (train)
+}
+
+to_onehot_y <- function(data, shape) {
+  train <- array(0, dim = c(shape[1], shape[2]))
+  for (i in 1:shape[1]) {
+    train[i, data[i]] <- 1
+  }
+  return (train)
+}
+
+
+```
+
+```{r}
+caca<-tokenize(seq_x,seq_y,maxlen)
+seq_y
+
+
+cbind(x=caca$x[1:2,],
+      nextchar=caca$y[1:2])
+```
+
+```{r}
+# Create a dataset using tokenizer
+build_dataset_tokenizer <- function(data, labels, maxlen) {
+  labels <- labels %>% as.matrix()
+  dataset <- tokenize(data, labels, maxlen)
+  shape = c(length(dataset$y), length(valid_characters_vector))
+  dataset$y <- to_onehot_y(dataset$y, shape)
+
+return(dataset)
+}
+sentences_tokenizer <- build_dataset_tokenizer(seq_x, seq_y, maxlen)
+
+initial_sentence <-seq_x[1]
+vectorized_test<-sentences_tokenizer$x[1,]
+enc<-""
+for (i in 0:length(vectorized_test)  ){
+      enc<-str_c(enc,valid_characters_vector[vectorized_test[i]])
+}
+enc==initial_sentence
+```
+
+```{r}
+# Create a dataset using one_hot
+build_dataset_one_hot <- function(data, labels, maxlen) {
+  labels <- labels %>% as.matrix()
+  dataset <- tokenize(data, labels, maxlen)
+  shape = c(nrow(dataset$x), maxlen, length(valid_characters_vector))
+  dataset$x <- to_onehot(dataset$x, shape)
+  shape = c(length(dataset$y), length(valid_characters_vector))
+  dataset$y <- to_onehot_y(dataset$y, shape)
+  return(dataset)
+}
+
+sentences_one_hot <- build_dataset_one_hot(seq_x, seq_y, maxlen)
+
+sentences_one_hot$x
+```
+##  Helper function for generating next char
+```{r}
+choose_next_char <- function(preds, chars, temperature,seed){
+        set.seed(seed)
+        preds <- log(preds) / temperature
+        exp_preds <- exp(preds)
+        preds <- exp_preds / sum(exp(preds))
+
+        next_index <- rmultinom(1, 1, preds) %>%
+            as.integer() %>%
+            which.max()
+        chars[next_index]
+    }
+```
+## Model 2 (sequential, one_hot)
+```{r}
+create_model <- function(chars, max_length){
+    keras_model_sequential() %>%
+        #layer_lstm(128, input_shape = c(max_length, length(chars))) %>%
+         layer_conv_1d(filters = 32, kernel_size = 3,
+                       activation = 'relu', 
+                       padding='valid',
+                       strides=1,
+                       input_shape = c(max_length, length(chars))
+                       ) %>%
+          layer_flatten() %>%
+        layer_dense(length(chars)) %>%
+        layer_activation("softmax") %>%
+        compile(
+            loss = "categorical_crossentropy",
+            #optimizer = optimizer_rmsprop(learning_rate = 0.001)
+            optimizer = optimizer_adam()
+        )
+}
+seq_vectorized_x<-sentences_one_hot$x
+seq_vectorized_y<-sentences_one_hot$y
+model_onehot <- create_model(valid_characters_vector,max_length = maxlen)
+summary(model_onehot)
+```
+
+### Train
+```{r}
+callbacks = list(
+  callback_model_checkpoint("../../../models/dgagen.keras", save_best_only = TRUE)
+)
+gc()
+seq_vectorized_x %>% dim
+seq_vectorized_y %>% dim
+model_onehot %>% fit(seq_vectorized_x, 
+                     seq_vectorized_y,
+                     batch_size=128, 
+                     epochs=1, 
+                     verbose=1,
+                     )
+
+save_model_tf(model_onehot,"../../../models/dgagen.keras")
+```
+
+
+```{r}
+seed<-lubridate::now() %>% lubridate::as_datetime() %>% as.integer()
+seed %% 133393
+
+```
+```{r message=FALSE, warning=FALSE}
+model_onehot <-  load_model_tf("../../../models/dgagen.keras")
+```
+
+
+```{r}
+seed<-lubridate::now() %>% lubridate::as_datetime() %>% as.integer()
+seed<-seed %% 133393
+```
+```{r}
+saveRDS(seq_x,"../plumber/dgagen/seq.rds")
+
+```
+
+### Generate
+```{r}
+seed = 1
+nextseed <- seed
+dga<-c()
+set.seed(seed)
+seq_x<-readRDS("../plumber/dgagen/seq.rds")
+
+for (j in seq(0:10)){
+model_onehot <-  load_model_tf("../../../models/dgagen.keras")
+initial_sentence <- seq_x[seed]
+generated<-""
+for (i in seq(0:sample(15:35,1))) {
+  set.seed(seed)
+  vectorized_test<-tokenize(initial_sentence,"n",maxlen)
+  shape=c(nrow(vectorized_test$x),maxlen,length(valid_characters_vector))
+  vectorized_test<-to_onehot(vectorized_test$x,shape)
+  
+  predictions <- model_onehot(vectorized_test)
+  predictions <- predictions %>% as.array()  
+  #predictions<-predict(model_onehot, vectorized_test,verbose = 0,use_multiprocessing = TRUE,workers=5)
+  next_char <- choose_next_char(preds = predictions, chars = valid_characters_vector, temperature = 0.2, nextseed)
+  initial_sentence <- paste0(initial_sentence, next_char)
+  initial_sentence <- substr(initial_sentence, 2, nchar(initial_sentence))
+  generated<-paste0(generated, next_char)
+  nextseed <- nextseed+1
+}
+paste0(generated,".com")
+print(paste0("generated: ",generated,".com"))
+dga[j]<-paste0(generated,".com")
+}
+```
+```{r}
+dga %>% as.data.frame()
+```
+
+
+```{r}
+library(curl)
+res<-c()
+reference<-factor(rep(1,length(dga)),levels=c(0,1))
+for (j in seq(1:length(dga))){
+  req<- curl::curl_fetch_memory(paste0("http://catanuso.duckdns.org:8000/predict?domain=",dga[j]))
+  res[j]<-({jsonlite::parse_json(rawToChar(req$content))}$class)
+}
+caret::confusionMatrix(data=as.factor(res),reference)
+```
+```{r}
+dgadf<-data.frame(domains=dga)
+readr::write_csv(dgadf,"/home/harpo/hostdir/ia-dojo-repo/experiments/dga-gen/data/generated-domains.csv")
+```
+
+```{bash eval=FALSE, include=FALSE}
+harpo@joker:~/ia-dojo-repo/experiments/dga-gen/data$ docker run -i -v $PWD:/mnt registry.gitlab.com/cossas/dgad:4.1.1 client -f /mnt/generated-domains.csv -dc=domains >../results/dgad_detection.json
+
+```
+
+```{r}
+library(jsonlite)
+dgadres<-jsonlite::read_json("../../../results/dgad_detection.json")
+dgadres<-dgadres %>% map( ~ifelse(.x$is_dga == TRUE, 1,0) ) %>% unlist()
+caret::confusionMatrix(data=as.factor(dgadres),reference)
+```
+

@@ -1,0 +1,271 @@
+---
+title: "Variational Auto Encoder for Sequences"
+output: html_notebook
+---
+```{r}
+rm(list = ls())
+```
+
+```{r setup}
+knitr::opts_knit$set(root.dir = '/home/harpo/hostdir/ia-dojo-repo/experiments/dga-gen/')
+```
+
+```{r message=FALSE, warning=FALSE}
+library(keras)
+library(tensorflow) 
+```
+
+# Load helpers functions
+```{r message=FALSE, warning=FALSE}
+source("code/R/functions/dgagen-helpers.R")
+source("code/R/functions/dgagen-vae.R")
+```
+# Read domains
+```{r}
+library(urltools)
+text <- readr::read_csv("rawdata/argencon.csv.gz")
+text<-text %>% tidyr::separate(label,c("label","family"))
+#text<-text %>% filter(grepl("normal",label))
+#text<-text %>% group_by(family)%>% sample_frac(0.05)
+text<-text %>% group_by(label)%>% sample_frac(0.1)
+domains <-  text %>% pull(domain)
+domains <- domains %>% urltools::host_extract()
+domains <- domains  %>% tidyr::drop_na() %>% pull(host)
+```
+# Convert to one-hot encoding
+
+```{r}
+sentences_tokenized<-tokenize(domains %>% as.matrix, "n",maxlen)
+shape <- c(nrow(sentences_tokenized$x), maxlen, length(valid_characters_vector))
+seq_x<-to_onehot(sentences_tokenized$x,shape)
+seq_x[1,,]
+```
+
+## Check one_hot
+Check the one-hot implementation. Given a one-hot encoded domain, obtain the string
+
+```{r}
+dimen<-seq_x %>% dim()
+enc<-""
+for (i in 0:dimen[2]  ){
+#      print(i)
+      enc<-str_c(enc,valid_characters_vector[which.max(seq_x[1,i,])])
+}
+enc
+```
+ 
+
+
+
+# VAE
+This is the current implementation of Variational auto-encoder for sequences.  The LSTM version is operational.
+
+```{r}
+latent_dim <-  64
+vocab_size <-length(valid_characters_vector)
+input_size <-  c(maxlen, vocab_size)
+```
+
+
+```{r}
+vae_decoder<-create_vae_decoder(latent_dim = latent_dim, maxlen = maxlen,voc_size = vocab_size)
+vae_encoder<-create_vae_encoder(latent_dim = latent_dim,input_size = input_size)
+vae <- model_vae(vae_encoder, vae_decoder)
+vae$summary()
+
+```
+
+
+# Training
+```{r}
+optimizer <- optimizer_adam(learning_rate = 0.005)
+vae %>% compile(optimizer = optimizer)
+
+```
+
+
+```{r}
+model_path <- "models/vael64best.keras/"
+my_callbacks <- list(
+  callback_model_checkpoint(model_path, 
+                            save_best_only = TRUE)
+)
+vae %>% fit(seq_x,epochs = 5,
+                batch_size = 512,
+            validation_split=0.2)
+```
+
+## Save weights
+```{r}
+#vae$save("/tmp/keras-model")
+#save_model_tf(vae,model_path)
+#save_model_weights_tf(vae, "models/dgagen_vae__weights")
+#load_model_weights_tf(vae, "models/dgagen_vae__weights")
+```
+
+#Testing
+
+We pick a domain, encode it and decode it.
+
+```{r}
+# Pick domain
+d<-domains[162100]
+print(paste("domain: ",d))
+
+# Preprocess
+vectorized_test <- tokenize(d, "n", maxlen)
+shape <- c(nrow(vectorized_test$x),
+          maxlen,
+          length(valid_characters_vector))
+vectorized_test <- to_onehot(vectorized_test$x, shape)
+dim(vectorized_test)
+# Encode
+encoded <- vae$encoder(vectorized_test)
+encoded[[1]] %>% dim()
+# Decode
+decoded <- predict(vae$decoder, encoded[[1]], verbose = 0 )
+dimen<-dim(decoded)
+print(dimen)
+
+# Print resulting domain
+enc<-""
+for (i in 1:dimen[2]  ){
+  enc<-str_c(enc,valid_characters_vector[which.max(decoded[1,i,])])
+}
+enc<-substr(enc, start = 1,stop =nchar(d) )
+print(paste("decoded domains:", enc))
+```
+
+## Generation
+
+Given a domain generate small variations of it.
+
+```{r message=FALSE}
+
+d<-text %>% filter(label=="normal") %>% sample_n(10) %>% pull(domain) %>% urltools::host_extract() %>% tidyr::drop_na() %>% pull(host)
+#did<-sample(1:100,10)
+dga<-c()
+for (j in 1:length(d)){
+  #  d<-domains[j]
+  vectorized_test <- tokenize(d[j], "n", maxlen)
+  shape = c(nrow(vectorized_test$x),
+            maxlen,
+            length(valid_characters_vector))
+  vectorized_test <- to_onehot(vectorized_test$x, shape)
+  preds_encoder <- vae$encoder(vectorized_test)
+  print(d[j])
+  for (k in 1:10){
+ 
+    eps<-rnorm(latent_dim,mean = 0,sd = 0.01)
+    z <- tf$add(eps,preds_encoder[[1]])
+    #z <- list(eps) %>% as_tensor()
+    decoded <- predict(vae$decoder, z, verbose = 0 )
+    dimen<-dim(decoded)
+    enc<-""
+    for (i in 1:dimen[2]  ){
+      enc<-str_c(enc,valid_characters_vector[which.max(decoded[1,i,])])
+    }
+    enc<-substr(enc, start = 1,stop =nchar(d[j]) ) 
+    dga<-c(dga,enc)
+  }
+}
+dga %>% as.data.frame()
+
+```
+
+
+# DGA detector Results
+Check the results of the generator against the CNN CACIC 2018 DGA detector.
+```{r}
+library(curl)
+library(jsonlite)
+res<-c()
+reference<-factor(rep(1,length(dga)),levels=c(0,1))
+for (j in seq(1:length(dga))){
+  req<- curl::curl_fetch_memory(paste0("http://catanuso.duckdns.org:8000/predict?domain=",dga[j]))
+  res[j]<-({jsonlite::parse_json(rawToChar(req$content))}$class)
+}
+
+data.frame(dga,res)
+caret::confusionMatrix(data=as.factor(res),reference)
+```
+# Save the generated domains.
+```{r}
+dgadf<-data.frame(domains=dga)
+readr::write_csv(dgadf,"/home/harpo/hostdir/ia-dojo-repo/experiments/dga-gen/data/generated-domains.csv")
+```
+
+```{bash eval=FALSE, include=FALSE}
+harpo@joker:~/ia-dojo-repo/experiments/dga-gen/data$ docker run -i -v $PWD:/mnt registry.gitlab.com/cossas/dgad:4.1.1 client -f /mnt/generated-domains.csv -dc=domains >../results/dgad_detection.json
+
+```
+
+```{r}
+library(jsonlite)
+dgadres<-jsonlite::read_json("../../../results/dgad_detection.json")
+dgadres<-dgadres %>% map( ~ifelse(.x$is_dga == TRUE, 1,0) ) %>% unlist()
+caret::confusionMatrix(data=as.factor(dgadres),reference)
+```
+
+
+
+# Plots
+## Encode domains into the embedded space.
+
+```{r}
+
+encoded_seq_x_vae <-predict(vae$encoder, seq_x)
+encoded_seq_x_vae_mean<-encoded_seq_x_vae[[1]]
+```
+
+## Histogram
+```{r}
+
+library(ggplot2)
+encoded_seq_x_vae_mean[,40] %>% as.data.frame() %>%
+  ggplot()+
+  geom_histogram(aes(x=.),fill='skyblue',color='white') +
+  theme_classic()
+```
+
+## UMAP
+```{r}
+library(umap)
+umap_data_vae <- umap(encoded_seq_x_vae_mean)
+text_reduce_vae<-text %>% head(nrow(umap_data_vae$layout))
+domains_data_umap_vae <- data.frame(umap_data_vae$layout, text_reduce_vae$family)
+```
+
+
+```{r fig.height=8, fig.width=8}
+ggplot(domains_data_umap_vae %>% sample_frac(0.1)) +
+  geom_point(aes(x=X1,y=X2,color=text_reduce_vae.family),alpha=0.9,size=2)+#,shape=1) +
+  labs(subtitle = "Variational Autoencoder: Latent space 2D projection (UMAP) (zoomed-in view)",title="DOMAIN NAMES FAMILIES")+
+  ylim(-5,5)+
+  xlim(-6,5)+
+  ylab("")+
+  xlab("")+
+  theme_classic()+
+  ggdark::dark_theme_classic()
+ # theme(legend.position = "none")
+
+#plotly::ggplotly()
+
+```
+## PCA
+
+```{r}
+pca_data_vae<- prcomp(encoded_seq_x_vae_mean)
+nrow(pca_data_vae$x)
+text_reduce<-text %>% head(nrow(pca_data_vae$x))
+domains_data_pca_vae <- data.frame(pca_data_vae$x, family=text_reduce$family)
+```
+
+```{r}
+ggplot(domains_data_pca_vae %>% sample_frac(0.1)) +
+  geom_point(aes(x=PC1,y=PC2,color=family),alpha=0.5,size=2) +
+  theme(legend.position = NULL) +
+  ylim(-5,5)+
+  xlim(-5,5)+
+  theme_classic()
+```

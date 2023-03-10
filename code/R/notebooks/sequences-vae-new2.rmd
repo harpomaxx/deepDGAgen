@@ -1,0 +1,567 @@
+---
+title: "Sequence VAE for DGA "
+output: html_notebook
+---
+```{r}
+rm(list = ls())
+```
+
+```{r setup}
+knitr::opts_knit$set(root.dir = '/home/harpo/hostdir/ia-dojo-repo/experiments/dga-gen/')
+```
+
+```{r message=FALSE, warning=FALSE}
+library(keras)
+library(tensorflow) 
+```
+
+
+```{r message=FALSE, warning=FALSE}
+source("code/R/functions/dgagen-helpers.R")
+```
+# Read domains
+```{r}
+library(urltools)
+
+
+text <- readr::read_csv("rawdata/argencon.csv.gz")
+text<-text %>% tidyr::separate(label,c("label","family"))
+#text<-text %>% filter(grepl("normal",label))
+#text<-text %>% group_by(family)%>% sample_frac(0.05)
+text<-text %>% group_by(label)%>% sample_frac(0.1)
+domains <-  text %>% pull(domain)
+domains <- domains %>% urltools::host_extract()
+domains <- domains  %>% tidyr::drop_na() %>% pull(host)
+```
+# Convert to one-hot encoding
+
+```{r}
+sentences_tokenized<-tokenize(domains %>% as.matrix, "n",maxlen)
+shape <- c(nrow(sentences_tokenized$x), maxlen, length(valid_characters_vector))
+seq_x<-to_onehot(sentences_tokenized$x,shape)
+seq_x[1,,]
+```
+
+## Check one_hot
+Check the one-hot implementation. Given a one-hot encoded domain, obtain the string
+
+```{r}
+dimen<-seq_x %>% dim()
+enc<-""
+for (i in 0:dimen[2]  ){
+#      print(i)
+      enc<-str_c(enc,valid_characters_vector[which.max(seq_x[1,i,])])
+}
+enc
+```
+ 
+```{r}
+dim (seq_x)
+```
+
+
+# LSTM sequence Autoencoder
+This is the original implementation of auto-encoder. Just put it here for comparison. It should be removed soon.
+
+```{r eval=FALSE, include=FALSE}
+
+input_size <-  c(maxlen, length(valid_characters_vector))
+latent_dim <- 64 
+## ENCODER
+enc_input <- layer_input(shape = input_size) 
+enc_output <- enc_input %>% 
+  layer_masking(mask_value = 0) %>%
+  layer_lstm(latent_dim)
+
+## DECODER
+dec_input <- layer_input(shape = latent_dim)
+dec_output <-   dec_input %>% 
+                layer_repeat_vector(maxlen) %>%
+                layer_lstm(valid_characters_vector %>% length(), return_sequences = TRUE) %>%
+                layer_dense(valid_characters_vector %>% length(),activation = 'softmax')
+               #$ outputs = TimeDistributed(Dense(vocab_size, activation='softmax'))(decoder1)
+  
+a_encoder <- keras_model(enc_input, enc_output,name ="encoder")
+a_decoder <- keras_model(dec_input, dec_output,name ="decoder")
+
+a_encoder
+a_decoder
+```
+```{r eval=FALSE, include=FALSE}
+
+autoencoder_input <- layer_input(shape = input_size,name="ae_input")
+autoencoder_output <- autoencoder_input %>% 
+  a_encoder() %>% 
+  a_decoder()
+autoencoder <- keras_model(autoencoder_input, autoencoder_output,name="autoencoder")
+optimizer <- optimizer_adam(learning_rate = 0.005)
+autoencoder %>% compile(optimizer= optimizer, loss='mse')
+autoencoder
+```
+## Training
+```{r eval=FALSE, include=FALSE}
+autoencoder %>% fit(seq_x, seq_x,
+                epochs=15,
+                batch_size=512)
+```
+```{r eval=FALSE, include=FALSE}
+#save_model_tf(decoder,"../../../models/dgagen-decoder.keras")
+```
+ 
+```{r eval=FALSE, include=FALSE}
+#decoder_b <- load_model_tf("../../../models/dgagen-decoder.keras")
+```
+## Testing
+```{r eval=FALSE, include=FALSE}
+d<-domains[1]
+print(d)
+vectorized_test <- tokenize(d, "n", maxlen)
+      shape = c(nrow(vectorized_test$x),
+                maxlen,
+                length(valid_characters_vector))
+vectorized_test <- to_onehot(vectorized_test$x, shape)
+dim(vectorized_test)
+preds_encoder <- a_encoder(vectorized_test)
+
+
+preds_encoder %>% dim()
+
+eps<-runif(latent_dim,-0.1,0.1) %>% as_tensor()
+#z <- tf$add(eps,preds_encoder)
+z <-preds_encoder
+decoded <- predict(a_decoder, z)
+dimen<-dim(decoded)
+dimen
+enc<-""
+for (i in 1:dimen[2]  ){
+  enc<-str_c(enc,valid_characters_vector[which.max(decoded[1,i,])])
+}
+print(substr(enc, start = 1,stop =nchar(d) ) )
+#enc %>% gsub(x=. , "\\.(.{1,3}).*$",".\\1")
+
+
+```
+## Plot
+```{r eval=FALSE, include=FALSE}
+library(umap)
+library(ggplot2)
+encoded_seq_x <-predict(a_encoder, seq_x)
+encoded_seq_x_mean<-encoded_seq_x
+encoded_seq_x_mean[,1] %>% as.data.frame() %>%
+  ggplot()+
+  geom_histogram(aes(x=.),fill='skyblue',color='white') +
+  theme_classic()
+
+```
+
+
+# VAE
+This is the current implementation of Variational auto-encoder for sequences. The CNN version doesn't work. The LSTM version is operational.
+
+### Encoder
+##### CNN 
+```{r eval=FALSE, include=FALSE}
+
+latent_dim <- 2
+input_size <-  c(maxlen, length(valid_characters_vector))
+encoder_inputs <-  layer_input(shape=input_size)
+
+x <- encoder_inputs %>%
+   layer_masking(mask_value = 0) %>%
+  layer_conv_1d(32, 3, activation = "relu", strides = 2, padding = "same") %>%
+  layer_conv_1d(64, 3, activation = "relu", strides = 2, padding = "same") %>%
+  layer_flatten() %>%
+  layer_dense(16, activation = "relu")
+z_mean    <- x %>% layer_dense(latent_dim, name="z_mean")
+z_log_var <- x %>% layer_dense(latent_dim, name="z_log_var")
+encoder <- keras_model(encoder_inputs, list(z_mean, z_log_var),
+                       name="encoder")
+```
+
+```{r}
+latent_dim <-  64
+input_size <-  c(maxlen, length(valid_characters_vector))
+```
+
+#### LSTM
+
+```{r}
+encoder_inputs <-  layer_input(shape=input_size)
+
+x <- encoder_inputs %>%  
+  layer_masking(mask_value = 0) %>%
+  layer_lstm(256, return_sequences = TRUE) %>%
+  layer_lstm(latent_dim)
+
+z_mean    <- x %>% layer_dense(latent_dim, name="z_mean")
+z_log_var <- x %>% layer_dense(latent_dim, name="z_log_var")
+vae_encoder <- keras_model(encoder_inputs, list(z_mean, z_log_var),
+                       name="encoder")
+```
+
+
+```{r}
+vae_encoder
+```
+
+
+### Sampler
+
+```{r}
+layer_sampler <- new_layer_class(
+  classname = "Sampler",
+  call = function(self, z_mean, z_log_var) {
+    epsilon <- tf$random$normal(shape = tf$shape(z_mean))#,mean=0., stddev=1.0 )
+    z_mean + exp(0.5 * z_log_var) * epsilon
+  }
+)
+```
+
+
+### Decoder
+#### CNN
+
+```{r eval=FALSE, include=FALSE}
+latent_inputs <- layer_input(shape = c(latent_dim))
+decoder_outputs <- latent_inputs %>%
+  layer_dense(10 * 64, activation = "relu") %>%
+  layer_reshape(c(10, 64)) %>%
+  layer_conv_1d_transpose(64, 3, activation = "relu",
+                          strides = 2, padding = "same") %>%
+  layer_conv_1d_transpose(32, 3, activation = "relu",
+                          strides = 2, padding = "same") %>%
+  layer_conv_1d(44, 3, activation = "sigmoid", padding = "same")
+decoder <- keras_model(latent_inputs, decoder_outputs,
+                       name = "decoder")
+```
+#### LSTM
+```{r}
+latent_inputs <- layer_input(shape = c(latent_dim))
+decoder_outputs <- latent_inputs %>% 
+  #layer_dense(256, activation = 'relu') %>%
+  layer_repeat_vector(maxlen) %>%
+  #layer_lstm(64, return_sequences = TRUE) %>%
+  #layer_lstm(128, return_sequences = TRUE) %>%
+  layer_lstm(valid_characters_vector %>% length(), return_sequences = TRUE) %>%
+  layer_dense(valid_characters_vector %>% length(),activation = 'softmax')
+vae_decoder <- keras_model(latent_inputs, decoder_outputs,
+                       name = "decoder")
+```
+
+```{r}
+vae_decoder
+```
+
+
+### Model
+```{r}
+model_vae <- new_model_class(
+  classname = "VAE",
+
+  initialize = function(encoder, decoder, ...) {
+    super$initialize(...)
+    self$k <- 0
+    #self$cost_annealing <-0
+    self$encoder <- encoder
+    self$decoder <- decoder
+    self$sampler <- layer_sampler()
+    self$total_loss_tracker <-
+      metric_mean(name = "total_loss")
+    self$reconstruction_loss_tracker <-
+      metric_mean(name = "reconstruction_loss")
+    self$kl_loss_tracker <-
+      metric_mean(name = "kl_loss")
+  },
+
+  metrics = mark_active(function() {
+    list(
+      self$total_loss_tracker,
+      self$reconstruction_loss_tracker,
+      self$kl_loss_tracker
+    )
+  }),
+  
+  train_step = function(data) {
+    with(tf$GradientTape() %as% tape, {
+      c(z_mean, z_log_var) %<-% self$encoder(data)
+      z <- self$sampler(z_mean, z_log_var)
+      #z <- z_mean
+      #mask <- k_cast(k_not_equal(data, 0), dtype='float32')
+      reconstruction <- self$decoder(z) #*  mask     
+      reconstruction_loss <-  loss_mean_squared_error(data, reconstruction)#,from_logits = FALSE) #  %>% mean()
+      reconstruction_loss <- sum (reconstruction_loss, axis = -1 ) #%>% mean()
+      kl_loss <- -0.5 * (1 + z_log_var - z_mean^2 - exp(z_log_var))
+      kl_loss <- sum(kl_loss, axis = -1 ) # %>% mean()
+      # Implementing cost annealing
+      cost_annealing <- ( 1 * (1 - exp( -0.0002 *(self$k)) ))
+      total_loss <-  mean(reconstruction_loss + kl_loss *  cost_annealing )
+      self$k <- self$k + 1
+    })
+    grads <- tape$gradient(total_loss, self$trainable_weights)
+    self$optimizer$apply_gradients(zip_lists(grads, self$trainable_weights))
+    self$total_loss_tracker$update_state(total_loss)
+    self$reconstruction_loss_tracker$update_state(reconstruction_loss)
+    self$kl_loss_tracker$update_state(kl_loss)
+
+    list(total_loss = self$total_loss_tracker$result(),
+         reconstruction_loss = self$reconstruction_loss_tracker$result(),
+         kl_loss = self$kl_loss_tracker$result())
+  }
+)
+```
+
+
+
+```{r eval=FALSE, include=FALSE}
+ mask <- k_not_equal(vectorized_test, 0)
+tf$boolean_mask(vectorized_test,mask)
+```
+
+
+```{r eval=FALSE, include=FALSE}
+mask <- k_cast(k_not_equal(vectorized_test, 0), dtype='float64')
+mask * decoded[1,,]
+
+loss_mean_absolute_error(vectorized_test,decoded[1,,]) %>% sum(axis=c(2))
+
+loss_binary_crossentropy(vectorized_test,vectorized_test) 
+
+dim(decoded)
+dim(vectorized_test)
+
+```
+
+
+# Training
+```{r}
+optimizer <- optimizer_adam(learning_rate = 0.005)
+vae <- model_vae(vae_encoder, vae_decoder)
+vae %>% compile(optimizer = optimizer)
+
+```
+
+
+```{r}
+model_path <- "models/vael64best.keras/"
+my_callbacks <- list(
+  callback_model_checkpoint(model_path, 
+                            save_best_only = TRUE)
+)
+## -------------------------------------------------------------------------
+#vae %>% fit(mnist_digits, epochs = 30, batch_size = 128)
+vae %>% fit(seq_x,epochs = 5,
+                batch_size = 512
+            
+            )
+
+
+```
+
+
+```{r}
+#vae$save("/tmp/keras-model")
+#save_model_tf(vae,model_path)
+#save_model_weights_tf(vae, "models/dgagen_vae__weights")
+#load_model_weights_tf(vae, "models/dgagen_vae__weights")
+```
+
+#Testing
+
+We pick a domain, encode it and decode it.
+
+```{r}
+# Pick domain
+d<-domains[162100]
+print(paste("domain: ",d))
+
+# Preprocess
+vectorized_test <- tokenize(d, "n", maxlen)
+shape <- c(nrow(vectorized_test$x),
+          maxlen,
+          length(valid_characters_vector))
+vectorized_test <- to_onehot(vectorized_test$x, shape)
+dim(vectorized_test)
+# Encode
+encoded <- vae$encoder(vectorized_test)
+encoded[[1]] %>% dim()
+# Decode
+decoded <- predict(vae$decoder, encoded[[1]], verbose = 0 )
+dimen<-dim(decoded)
+print(dimen)
+
+# Print resulting domain
+enc<-""
+for (i in 1:dimen[2]  ){
+  enc<-str_c(enc,valid_characters_vector[which.max(decoded[1,i,])])
+}
+enc<-substr(enc, start = 1,stop =nchar(d) )
+print(paste("decoded domains:", enc))
+```
+
+```{r}
+encoded_mean<-encoded_seq_x_vae_mean %>% apply(.,MARGIN = 2, mean)
+encoded_sd<-encoded_seq_x_vae_mean %>% apply(.,MARGIN = 2, sd)
+
+```
+## Generation
+
+Given a domain generate small variations of it.
+
+```{r message=FALSE}
+
+d<-text %>% filter(label=="normal") %>% sample_n(10) %>% pull(domain) %>% urltools::host_extract() %>% tidyr::drop_na() %>% pull(host)
+#did<-sample(1:100,10)
+dga<-c()
+for (j in 1:length(d)){
+  #  d<-domains[j]
+  vectorized_test <- tokenize(d[j], "n", maxlen)
+  shape = c(nrow(vectorized_test$x),
+            maxlen,
+            length(valid_characters_vector))
+  vectorized_test <- to_onehot(vectorized_test$x, shape)
+  preds_encoder <- vae$encoder(vectorized_test)
+  print(d[j])
+  for (k in 1:10){
+ 
+    eps<-rnorm(latent_dim,mean = 0,sd = 0.01)
+    z <- tf$add(eps,preds_encoder[[1]])
+    #z <- list(eps) %>% as_tensor()
+    decoded <- predict(vae$decoder, z, verbose = 0 )
+    dimen<-dim(decoded)
+    enc<-""
+    for (i in 1:dimen[2]  ){
+      enc<-str_c(enc,valid_characters_vector[which.max(decoded[1,i,])])
+    }
+    enc<-substr(enc, start = 1,stop =nchar(d[j]) ) 
+    dga<-c(dga,enc)
+  }
+}
+dga %>% as.data.frame()
+
+```
+
+
+```{r}
+
+z_grid <-
+  seq(-1, 1, length.out = 10) %>%
+  expand.grid(., .) %>%
+  as.matrix()
+
+z_grid<-rep(rnorm(64),100) %>% matrix( ncol=64, nrow=100)
+
+
+dim(z_grid)
+decoded <- predict(vae$decoder, z_grid)
+#decoded[3,,]
+dim(decoded)
+
+#dimen<- preds %>% dim()
+
+dimen
+for (j in 1:nrow(z_grid)){
+  enc<-""
+  for (i in 1:dimen[2]  ){
+    enc<-str_c(enc,valid_characters_vector[which.max(decoded[j,i,])])
+  }
+  print(substr(enc, start = 1,stop =10 ) )
+  #enc %>% gsub(x=. , "\\.(.{1,3}).*$",".\\1")
+  
+}
+```
+
+# DGA detector Results
+Check the results of the generator against the CNN CACIC 2018 DGA detector.
+```{r}
+library(curl)
+library(jsonlite)
+res<-c()
+reference<-factor(rep(1,length(dga)),levels=c(0,1))
+for (j in seq(1:length(dga))){
+  req<- curl::curl_fetch_memory(paste0("http://catanuso.duckdns.org:8000/predict?domain=",dga[j]))
+  res[j]<-({jsonlite::parse_json(rawToChar(req$content))}$class)
+}
+
+data.frame(dga,res)
+caret::confusionMatrix(data=as.factor(res),reference)
+```
+# Save the generated domains.
+```{r}
+dgadf<-data.frame(domains=dga)
+readr::write_csv(dgadf,"/home/harpo/hostdir/ia-dojo-repo/experiments/dga-gen/data/generated-domains.csv")
+```
+
+```{bash eval=FALSE, include=FALSE}
+harpo@joker:~/ia-dojo-repo/experiments/dga-gen/data$ docker run -i -v $PWD:/mnt registry.gitlab.com/cossas/dgad:4.1.1 client -f /mnt/generated-domains.csv -dc=domains >../results/dgad_detection.json
+
+```
+
+```{r}
+library(jsonlite)
+dgadres<-jsonlite::read_json("../../../results/dgad_detection.json")
+dgadres<-dgadres %>% map( ~ifelse(.x$is_dga == TRUE, 1,0) ) %>% unlist()
+caret::confusionMatrix(data=as.factor(dgadres),reference)
+```
+
+
+
+# Plots
+## Encode domains into the embedded space.
+
+```{r}
+
+encoded_seq_x_vae <-predict(vae$encoder, seq_x)
+encoded_seq_x_vae_mean<-encoded_seq_x_vae[[1]]
+```
+
+## Histogram
+```{r}
+
+library(ggplot2)
+encoded_seq_x_vae_mean[,40] %>% as.data.frame() %>%
+  ggplot()+
+  geom_histogram(aes(x=.),fill='skyblue',color='white') +
+  theme_classic()
+```
+
+## UMAP
+```{r}
+library(umap)
+umap_data_vae <- umap(encoded_seq_x_vae_mean)
+text_reduce_vae<-text %>% head(nrow(umap_data_vae$layout))
+domains_data_umap_vae <- data.frame(umap_data_vae$layout, text_reduce_vae$family)
+```
+
+
+```{r fig.height=8, fig.width=8}
+ggplot(domains_data_umap_vae %>% sample_frac(0.1)) +
+  geom_point(aes(x=X1,y=X2,color=text_reduce_vae.family),alpha=0.9,size=2)+#,shape=1) +
+  labs(subtitle = "Variational Autoencoder: Latent space 2D projection (UMAP) (zoomed-in view)",title="DOMAIN NAMES FAMILIES")+
+  ylim(-5,5)+
+  xlim(-6,5)+
+  ylab("")+
+  xlab("")+
+  theme_classic()+
+  ggdark::dark_theme_classic()
+ # theme(legend.position = "none")
+
+#plotly::ggplotly()
+
+```
+## PCA
+
+```{r}
+pca_data_vae<- prcomp(encoded_seq_x_vae_mean)
+nrow(pca_data_vae$x)
+text_reduce<-text %>% head(nrow(pca_data_vae$x))
+domains_data_pca_vae <- data.frame(pca_data_vae$x, family=text_reduce$family)
+```
+
+```{r}
+ggplot(domains_data_pca_vae %>% sample_frac(0.1)) +
+  geom_point(aes(x=PC1,y=PC2,color=family),alpha=0.5,size=2) +
+  theme(legend.position = NULL) +
+  ylim(-5,5)+
+  xlim(-5,5)+
+  theme_classic()
+```
