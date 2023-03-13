@@ -1,0 +1,4 @@
+outs:
+- md5: 3cdcfd4a96d3e545e3f854f04984b0be
+  size: 34136705
+  path: argencon.csv.gz
