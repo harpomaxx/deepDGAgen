@@ -4,7 +4,7 @@ output: html_notebook
 ---
 
 ```{r setup}
-knitr::opts_knit$set(root.dir = '/home/harpo/hostdir/ia-dojo-repo/experiments/dga-gen/')
+knitr::opts_knit$set(root.dir = '/home/harpo/hostdir/git-repos/deepDGAgen/')  #change this to your local directory
 ```
 
 ```{r message=FALSE, warning=FALSE}

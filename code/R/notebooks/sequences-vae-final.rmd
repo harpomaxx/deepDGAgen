@@ -7,7 +7,7 @@ rm(list = ls())
 ```
 
 ```{r setup}
-knitr::opts_knit$set(root.dir = '/home/harpo/hostdir/ia-dojo-repo/experiments/dga-gen/')
+knitr::opts_knit$set(root.dir = '/home/harpo/hostdir/git-repos/deepDGAgen/')  #change this to your local directory
 ```
 
 ```{r message=FALSE, warning=FALSE}
@@ -16,7 +16,7 @@ library(tensorflow)
 ```
 
 # Load helpers functions
-```{r message=FALSE, warning=FALSE}
+```{r message=FALSE}
 source("code/R/functions/dgagen-helpers.R")
 source("code/R/functions/dgagen-vae.R")
 ```
@@ -24,14 +24,19 @@ source("code/R/functions/dgagen-vae.R")
 ```{r}
 library(urltools)
 text <- readr::read_csv("rawdata/argencon.csv.gz")
-text<-text %>% tidyr::separate(label,c("label","family"))
+text<-text %>% tidyr::separate(label,c("label","family"),sep = "\\.")
+#dgadomains<- text %>% filter(family == "necurs")
+normaldomains <- text %>% filter(label == "normal") %>% sample_frac(0.15)
 #text<-text %>% filter(grepl("normal",label))
 #text<-text %>% group_by(family)%>% sample_frac(0.05)
-text<-text %>% group_by(label)%>% sample_frac(0.1)
+#text<-text %>% group_by(label)%>% sample_frac(0.1)
+#text <- rbind(dgadomains,normaldomains)
+text <- normaldomains
 domains <-  text %>% pull(domain)
 domains <- domains %>% urltools::host_extract()
 domains <- domains  %>% tidyr::drop_na() %>% pull(host)
 ```
+
 # Convert to one-hot encoding
 
 ```{r}
@@ -60,6 +65,8 @@ enc
 # VAE
 This is the current implementation of Variational auto-encoder for sequences.  The LSTM version is operational.
 
+Setup embedding space.
+
 ```{r}
 latent_dim <-  64
 vocab_size <-length(valid_characters_vector)
@@ -67,12 +74,13 @@ input_size <-  c(maxlen, vocab_size)
 ```
 
 
+Create model.
+
 ```{r}
-vae_decoder<-create_vae_decoder(latent_dim = latent_dim, maxlen = maxlen,voc_size = vocab_size)
-vae_encoder<-create_vae_encoder(latent_dim = latent_dim,input_size = input_size)
+vae_decoder <- create_vae_decoder(latent_dim = latent_dim, maxlen = maxlen,voc_size = vocab_size)
+vae_encoder <- create_vae_encoder(latent_dim = latent_dim,input_size = input_size)
 vae <- model_vae(vae_encoder, vae_decoder)
 vae$summary()
-
 ```
 
 
@@ -80,7 +88,6 @@ vae$summary()
 ```{r}
 optimizer <- optimizer_adam(learning_rate = 0.005)
 vae %>% compile(optimizer = optimizer)
-
 ```
 
 
@@ -90,9 +97,8 @@ my_callbacks <- list(
   callback_model_checkpoint(model_path, 
                             save_best_only = TRUE)
 )
-vae %>% fit(seq_x,epochs = 5,
-                batch_size = 512,
-            validation_split=0.2)
+vae %>% fit(seq_x,epochs = 10,
+                batch_size = 512)
 ```
 
 ## Save weights
@@ -109,7 +115,7 @@ We pick a domain, encode it and decode it.
 
 ```{r}
 # Pick domain
-d<-domains[162100]
+d<-domains[12113]
 print(paste("domain: ",d))
 
 # Preprocess
@@ -140,53 +146,135 @@ print(paste("decoded domains:", enc))
 
 Given a domain generate small variations of it.
 
-```{r message=FALSE}
 
-d<-text %>% filter(label=="normal") %>% sample_n(10) %>% pull(domain) %>% urltools::host_extract() %>% tidyr::drop_na() %>% pull(host)
-#did<-sample(1:100,10)
+```{r message=FALSE}
+n_samp<-100
+d<-text %>% filter(label=="normal") %>% sample_n(n_samp) %>% pull(domain) %>% urltools::host_extract() %>% tidyr::drop_na() %>% pull(host)
 dga<-c()
 for (j in 1:length(d)){
-  #  d<-domains[j]
   vectorized_test <- tokenize(d[j], "n", maxlen)
   shape = c(nrow(vectorized_test$x),
             maxlen,
             length(valid_characters_vector))
   vectorized_test <- to_onehot(vectorized_test$x, shape)
   preds_encoder <- vae$encoder(vectorized_test)
-  print(d[j])
-  for (k in 1:10){
+  decoded <- vae$decoder(preds_encoder[[1]]) %>% as.array()
+  
+  #decoded <- predict(vae$decoder, preds_encoder[[1]], verbose = 0 )
+  base_decoded<-get_decoded_string(decoded,valid_characters_vector)
+  vec_comp <- c(1,2,3,4,5,6,7,8)
+  v<-0.05
+  for (k in 1:100){
  
-    eps<-rnorm(latent_dim,mean = 0,sd = 0.01)
+    #eps<-rnorm(latent_dim,mean = 0.0,sd = 2)
+    eps<-runif(latent_dim,0,v)
+    #v<-eps[vec_comp] %>% as.numeric()
+    #mask<-rep(FALSE,latent_dim)
+    #mask[vec_comp]<-TRUE
+    
+    #eps<-tf$boolean_mask(eps,mask)
     z <- tf$add(eps,preds_encoder[[1]])
-    #z <- list(eps) %>% as_tensor()
-    decoded <- predict(vae$decoder, z, verbose = 0 )
+    #decoded <- predict(vae$decoder, z, verbose = 0 )
+    decoded <- vae$decoder( z ) 
+    decoded <- decoded %>% as.array()
     dimen<-dim(decoded)
-    enc<-""
-    for (i in 1:dimen[2]  ){
-      enc<-str_c(enc,valid_characters_vector[which.max(decoded[1,i,])])
-    }
-    enc<-substr(enc, start = 1,stop =nchar(d[j]) ) 
-    dga<-c(dga,enc)
+    enc<-get_decoded_string(decoded,valid_characters_vector)
+    enc<-cbind(base_decoded,enc,v)
+    dga<-rbind(dga,enc)
+    v<-v+0.05
   }
 }
-dga %>% as.data.frame()
+dga %>% as.data.frame() %>% group_by(base_decoded) %>% arrange(v)
+gendga_domains<-dga %>% as.data.frame() %>% mutate(v=as.numeric(v)) %>% filter(abs(v)>1) 
+gendga_domains
+#kk<-predict(vae$decoder, z, verbose = 0 ) 
+#kk %>% dim()
+#kkt<-vae$decoder(z) 
+#kkt %>% as.array()
+```
+## Char Freq
 
+```{r fig.height=2, fig.width=9}
+class_dga<-text %>% filter(label=="dga") %>% pull(domain) %>% urltools::host_extract() %>% tidyr::drop_na() %>% pull(host)
+plot<-create_char_histogram(class_dga)
+plot + ggtitle("Character Frequency Distribution for DGA domains")
 ```
 
+
+```{r fig.height=2, fig.width=9}
+class_dga <- text %>% filter(label=="normal") %>% pull(domain) %>% 
+  urltools::host_extract() %>% 
+  tidyr::drop_na() %>% 
+  pull(host)
+
+plot <- create_char_histogram(class_dga)
+plot + ggtitle("Character Frequency Distribution for Normal domains")
+```
+```{r fig.height=2, fig.width=9}
+gendga_domains1 <- dga %>% as.data.frame() %>% 
+  mutate(v=as.numeric(v)) %>% 
+  filter(abs(v)<0.5) %>% 
+  pull(enc)
+
+gendga_domains1
+plot <- create_char_histogram(gendga_domains1)
+plot + labs(title="Character Frequency Distribution for generated DGA domains",
+            subtitle="v < 0.5")
+```
+
+```{r fig.height=2, fig.width=9}
+gendga_domains2<-dga %>% as.data.frame() %>% mutate(v=as.numeric(v)) %>% filter(abs(v)>3 & abs(v)<4) %>% pull(enc)
+gendga_domains2
+plot<-create_char_histogram(gendga_domains2)
+plot + labs(title="Character Frequency Distribution for generated DGA domains",
+            subtitle=" 3 <  v < 4")
+```
+
+
+```{r fig.height=2, fig.width=9}
+gendga_domains3<-dga %>% as.data.frame() %>% mutate(v=as.numeric(v)) %>% filter(abs(v)>1 & abs(v)<2) %>% pull(enc)
+gendga_domains3
+plot<-create_char_histogram(gendga_domains3)
+plot + labs(title="Character Frequency Distribution for generated DGA domains",
+            subtitle=" 0.5 <  v < 1")
+```
+
+```{r fig.height=2, fig.width=9}
+gendga_domains<-dga %>% as.data.frame() %>% mutate(v=as.numeric(v)) %>% filter(abs(v)>2.5 & abs(v)<3) %>% pull(enc)
+gendga_domains
+plot<-create_char_histogram(gendga_domains)
+plot + labs(title="Character Frequency Distribution for generated DGA domains",
+            subtitle=" 2.5 <  v < 3")
+```
 
 # DGA detector Results
 Check the results of the generator against the CNN CACIC 2018 DGA detector.
 ```{r}
+gendga_domains1 %>% as.data.frame()  %>% filter(!grepl( .,pattern="\"")) 
+
+```
+
+```{r}
 library(curl)
 library(jsonlite)
+generated_domains<-gendga_domains1 %>% as.data.frame()  %>% filter(!grepl( .,pattern="[:punct]")) %>% pull(.)
+#generated_domains
+
+
+
 res<-c()
-reference<-factor(rep(1,length(dga)),levels=c(0,1))
-for (j in seq(1:length(dga))){
-  req<- curl::curl_fetch_memory(paste0("http://catanuso.duckdns.org:8000/predict?domain=",dga[j]))
+reference<-factor(rep(1,length(generated_domains)),levels=c(0,1))
+for (j in seq(1:length(generated_domains))){
+  print(generated_domains[j])
+  req<- curl::curl_fetch_memory(paste0("http://catanuso.duckdns.org:8000/predict?domain=",generated_domains[j]))
   res[j]<-({jsonlite::parse_json(rawToChar(req$content))}$class)
 }
 
-data.frame(dga,res)
+
+
+
+
+data.frame(generated_domains,res)
 caret::confusionMatrix(data=as.factor(res),reference)
 ```
 # Save the generated domains.
@@ -222,7 +310,7 @@ encoded_seq_x_vae_mean<-encoded_seq_x_vae[[1]]
 ```{r}
 
 library(ggplot2)
-encoded_seq_x_vae_mean[,40] %>% as.data.frame() %>%
+encoded_seq_x_vae_mean[,17] %>% as.data.frame() %>%
   ggplot()+
   geom_histogram(aes(x=.),fill='skyblue',color='white') +
   theme_classic()
@@ -239,10 +327,10 @@ domains_data_umap_vae <- data.frame(umap_data_vae$layout, text_reduce_vae$family
 
 ```{r fig.height=8, fig.width=8}
 ggplot(domains_data_umap_vae %>% sample_frac(0.1)) +
-  geom_point(aes(x=X1,y=X2,color=text_reduce_vae.family),alpha=0.9,size=2)+#,shape=1) +
+  geom_point(aes(x=X1,y=X2,color=text_reduce_vae.family),alpha=0.9,size=1,shape=1) +
   labs(subtitle = "Variational Autoencoder: Latent space 2D projection (UMAP) (zoomed-in view)",title="DOMAIN NAMES FAMILIES")+
-  ylim(-5,5)+
-  xlim(-6,5)+
+  ylim(-10,15)+
+  xlim(-10,15)+
   ylab("")+
   xlab("")+
   theme_classic()+
@@ -268,4 +356,13 @@ ggplot(domains_data_pca_vae %>% sample_frac(0.1)) +
   ylim(-5,5)+
   xlim(-5,5)+
   theme_classic()
+```
+# Clustering
+```{r fig.height=2, fig.width=9}
+kmeans_results <- kmeans(c(domains_data_umap_vae$X1, domains_data_umap_vae$X2) ,centers = 3, nstart = 5 )
+kmeans_results<-data.frame(text %>% head(nrow(encoded_seq_x_vae_mean)),cluster=kmeans_results$cluster)
+kmeans_results %>% filter(cluster==1) %>% pull(domain) %>% create_char_histogram() + ylim(0,0.1)
+kmeans_results %>% filter(cluster==2) %>% pull(domain) %>% create_char_histogram() + ylim(0,0.1)
+kmeans_results %>% filter(cluster==3) %>% pull(domain) %>% create_char_histogram() + ylim(0,0.1)
+#kmeans_results %>% filter(cluster==20) %>% pull(domain) %>% create_char_histogram() + ylim(0,0.1)
 ```

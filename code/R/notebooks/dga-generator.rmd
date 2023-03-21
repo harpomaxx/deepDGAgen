@@ -1,5 +1,5 @@
 ---
-title: "R Notebook"
+title: "Char-level DGA generator"
 output: html_notebook
 ---
 

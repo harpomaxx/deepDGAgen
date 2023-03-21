@@ -1,4 +1,4 @@
-# sNotes on Generative DGA
+# Notes on Generative DGA
 
 **Decisions**
 
