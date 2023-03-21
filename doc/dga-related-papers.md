@@ -17,3 +17,5 @@
 [[3]](https://www.researchgate.net/publication/344814944_MaskDGA_An_Evasion_Attack_Against_DGA_Classifiers_and_Adversarial_Defenses) Maskdga: An evasion attack against DGA classifiers and adversarial defenses
 
 [[4]](https://www.dropbox.com/s/nmy00pm5r649gcq/yun2019.pdf?dl=1) Khaos: An adversarial neural network DGA with a high anti-detection ability
+
+[[5]](https://arxiv.org/pdf/1905.01078.pdf)CharBot: A Simple and Effective Method for Evading DGA Classifiers
