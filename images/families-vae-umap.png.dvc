@@ -1,0 +1,4 @@
+outs:
+- md5: 6dd5c48f3b2b8cb0ed10e10f9786e582
+  size: 159304
+  path: families-vae-umap.png
