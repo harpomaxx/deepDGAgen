@@ -12,7 +12,7 @@ Keras, TensorFlow, R
 
 A char-level convolutional neural network for domains generation. Given an initial domain, the network will predict the next most likely character. A plumber dockerized service is available [here](https://github.com/harpomaxx/deepDGAgen/tree/master/code/R/plumber/dgagen).
 
-**Operation:** the botmaster and the botnet should have the list of initial domains and establish a mechanism for synchronyzing the seed to start generating from the same initial set of sequences. Or find a way to generate a particular domain name to start generating from.
+**Operation:** the botmaster and the botnet should have the list of initial domains. In other words the seed to start generating domains must be chosen from a list of domains included in the service. Then we need to establish a mechanism for synchronyzing the seed to start generating from the same initial set of sequences. Or find a way to generate a particular domain name to start generating from.
 
 **Benefits:**
 
@@ -26,7 +26,7 @@ A char-level convolutional neural network for domains generation. Given an initi
 
 ### Model 2
 
-Using auto encoders to create an embedded space from an initial set of bening domains. Domain autoencoders are based on a encoder/decoder LSTM architecture. A notebook with the implementation is available [here](https://github.com/harpomaxx/deepDGAgen/blob/master/code/R/notebooks/sequences-autoencoders.rmd).
+Using auto encoders to create an embedded space from an initial set of bening domains. Domain autoencoders are based on a encoder/decoder LSTM architecture. So instead of using a domain list as a seed, the idea is to compress the list using sequence autoencoders. The domains (\~100K for now) list used as seed was reduced to a 128-dimensional vector. Then we can use the decoder to recreate the original domain. A notebook with the implementation is available [here](https://github.com/harpomaxx/deepDGAgen/blob/master/code/R/notebooks/sequences-autoencoders.rmd).
 
 **Operation:** The botmaster and the botnet should share the same seed. The seed in this case would be the coordinates of an initial set of domains on the latent space learned by the autoencoders.
 
