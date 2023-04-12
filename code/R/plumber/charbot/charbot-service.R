@@ -14,7 +14,7 @@ d <-readRDS("./domains.rds")
 #* @serializer unboxedJSON
 
 function(seed=1, n=1, domains=d) {
-  seed <- as.integer(seed) %% length(seq)
+  seed <- as.integer(seed)
   n <- as.integer(n)
   dga<-charbot_generatedga(
         seed=seed,
